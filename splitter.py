@@ -28,7 +28,14 @@ IGNORED_TYPES = ['Sitemap Hreflang', 'XML Sitemap']
 HIGH_THRESHOLD = 100
 MEDIUM_THRESHOLD = 10
 
-REGIONS = ['APAC', 'MEISA', 'EU', 'LAC', 'US', 'Canada', 'USA']
+REGION_ALIASES = {
+    'APAC': ['APAC'],
+    'MEISA': ['MEISA'],
+    'EU': ['EU'],
+    'LAC': ['LAC'],
+    'US': ['US', 'USA', 'United States', 'United States of America'],
+    'Canada': ['Canada'],
+}
 SEGMENT_TOKEN_RE = re.compile(r'[A-Za-z0-9]+')
 
 # Locale-like path prefixes to skip when extracting URL groups
@@ -104,9 +111,24 @@ def get_matching_regions(value):
     """Return list of regions matching the Source Segments value."""
     if value is None or str(value).strip() == '':
         return ['OTHER']
-    segment_tokens = {token.upper() for token in SEGMENT_TOKEN_RE.findall(str(value))}
-    matches = [r for r in REGIONS if r.upper() in segment_tokens]
+    segment_tokens = [token.upper() for token in SEGMENT_TOKEN_RE.findall(str(value))]
+    matches = [
+        region
+        for region, aliases in REGION_ALIASES.items()
+        if any(_matches_segment_alias(segment_tokens, alias) for alias in aliases)
+    ]
     return matches if matches else ['OTHER']
+
+
+def _matches_segment_alias(segment_tokens, alias):
+    """Return True if alias appears as complete token(s) in Source Segments."""
+    alias_tokens = [token.upper() for token in SEGMENT_TOKEN_RE.findall(alias)]
+    if not alias_tokens:
+        return False
+    if len(alias_tokens) == 1:
+        return alias_tokens[0] in segment_tokens
+    end = len(segment_tokens) - len(alias_tokens) + 1
+    return any(segment_tokens[i:i + len(alias_tokens)] == alias_tokens for i in range(end))
 
 
 def extract_url_group(url, depth=2, pattern=None):
