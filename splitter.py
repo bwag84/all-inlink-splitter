@@ -28,7 +28,8 @@ IGNORED_TYPES = ['Sitemap Hreflang', 'XML Sitemap']
 HIGH_THRESHOLD = 100
 MEDIUM_THRESHOLD = 10
 
-REGIONS = ['APAC', 'MEISA', 'EU', 'LAC', 'USA']
+REGIONS = ['APAC', 'MEISA', 'EU', 'LAC', 'US', 'Canada', 'USA']
+SEGMENT_TOKEN_RE = re.compile(r'[A-Za-z0-9]+')
 
 # Locale-like path prefixes to skip when extracting URL groups
 LOCALE_RE = re.compile(r'^[a-z]{2}(?:-[a-z]{2})?$', re.IGNORECASE)
@@ -103,8 +104,8 @@ def get_matching_regions(value):
     """Return list of regions matching the Source Segments value."""
     if value is None or str(value).strip() == '':
         return ['OTHER']
-    value_str = str(value)
-    matches = [r for r in REGIONS if re.search(r, value_str, re.IGNORECASE)]
+    segment_tokens = {token.upper() for token in SEGMENT_TOKEN_RE.findall(str(value))}
+    matches = [r for r in REGIONS if r.upper() in segment_tokens]
     return matches if matches else ['OTHER']
 
 
