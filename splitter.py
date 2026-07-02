@@ -33,7 +33,7 @@ REGION_ALIASES = {
     'MEISA': ['MEISA'],
     'EU': ['EU'],
     'LAC': ['LAC'],
-    'US': ['US', 'USA', 'United States', 'United States of America'],
+    'USA': ['US', 'USA', 'United States', 'United States of America'],
     'Canada': ['Canada'],
 }
 SEGMENT_TOKEN_RE = re.compile(r'[A-Za-z0-9]+')

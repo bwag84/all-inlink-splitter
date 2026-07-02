@@ -54,12 +54,12 @@ output/2025-06-15/
   demo_EU.xlsx
   demo_LAC.xlsx
   demo_MEISA.xlsx
-  demo_US.xlsx
+  demo_USA.xlsx
   demo_Canada.xlsx
   demo_OTHER.xlsx
 ```
 
-Regions detected: APAC, MEISA, EU, LAC, US, Canada. `US`, `USA`, `United States`, and `United States of America` source segments are grouped into the US file. Rows matching no region go to OTHER. A row matching multiple regions appears in each.
+Regions detected: APAC, MEISA, EU, LAC, USA, Canada. `US`, `USA`, `United States`, and `United States of America` source segments are grouped into the USA file. Rows matching no region go to OTHER. A row matching multiple regions appears in each.
 
 ### URL
 

@@ -6,11 +6,11 @@ from splitter import get_matching_regions
 class RegionMatchingTests(unittest.TestCase):
     def test_matches_country_segment_names(self):
         cases = {
-            'US': ['US'],
-            'United States': ['US'],
-            'United States of America': ['US'],
+            'US': ['USA'],
+            'United States': ['USA'],
+            'United States of America': ['USA'],
             'Canada': ['Canada'],
-            'United States, Canada': ['US', 'Canada'],
+            'United States, Canada': ['USA', 'Canada'],
         }
 
         for source_segments, expected in cases.items():
