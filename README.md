@@ -59,7 +59,7 @@ output/2025-06-15/
   demo_OTHER.xlsx
 ```
 
-Regions detected: APAC, MEISA, EU, LAC, USA, Canada. `US`, `USA`, `United States`, and `United States of America` source segments are grouped into the USA file. Rows matching no region go to OTHER. A row matching multiple regions appears in each.
+Regions detected: APAC, MEISA, EU, LAC, USA, Canada. `US`, `U.S.`, `USA`, `U.S.A.`, `United States`, and `United States of America` source segments are grouped into the USA file. Rows matching no region go to OTHER. A row matching multiple regions appears in each.
 
 ### URL
 
@@ -91,10 +91,12 @@ Produces files like `demo_APAC_shipping_returns.xlsx`.
 
 ## Output File Structure
 
-Each output file has two sheets:
+Each output file normally has two sheets:
 
 1. **Summary** — Destinations ranked by frequency, with Priority and Impact columns
-2. **Data** — All original columns plus an appended **Priority** column
+2. **Data** — The canonical union of input columns plus an appended **Priority** column
+
+When a bucket contains more than 1,048,575 data rows, the file automatically continues into `Data 2`, `Data 3`, and so on. Summary entries likewise continue into numbered Summary sheets when needed. Every continuation sheet repeats its header, so no rows need to be discarded or repaired by Excel.
 
 ### Priority Levels
 
@@ -110,7 +112,7 @@ By default, rows with Type = "Sitemap Hreflang" or "XML Sitemap" are excluded. U
 
 ## Multi-Tab Support
 
-Screaming Frog splits large exports across multiple Excel tabs. This tool reads **all tabs** in each file. Headers are taken from the first tab; subsequent tabs' header rows are skipped automatically.
+Screaming Frog splits large exports across multiple Excel tabs. This tool reads **all tabs** in each file, resolves columns from each tab's own header row, and aligns reordered columns into one canonical output layout. Missing required headers, duplicate named headers, or data under unnamed headers reject that input with a precise error instead of silently misrouting or dropping rows; the CLI exits non-zero after processing any remaining inputs.
 
 ## Docker
 

@@ -18,6 +18,8 @@ from urllib.parse import urlparse
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill
+from openpyxl.xml.constants import MAX_COLUMN as EXCEL_MAX_COLUMNS
+from openpyxl.xml.constants import MAX_ROW as EXCEL_MAX_ROWS
 
 # ============================================================
 # CONFIGURATION
@@ -33,7 +35,7 @@ REGION_ALIASES = {
     'MEISA': ['MEISA'],
     'EU': ['EU'],
     'LAC': ['LAC'],
-    'USA': ['US', 'USA', 'United States', 'United States of America'],
+    'USA': ['US', 'U.S.', 'USA', 'U.S.A.', 'United States', 'United States of America'],
     'Canada': ['Canada'],
 }
 SEGMENT_TOKEN_RE = re.compile(r'[A-Za-z0-9]+')
@@ -83,11 +85,19 @@ class ProgressTracker:
 # ============================================================
 
 def find_column_index(headers, column_name):
-    """Find column index by name (case-insensitive substring match)."""
+    """Find a column by its normalized, case-insensitive header name."""
+    target = _header_key(column_name)
     for idx, header in enumerate(headers):
-        if header and column_name.lower() in str(header).lower():
+        if _header_key(header) == target:
             return idx
     return None
+
+
+def _header_key(header):
+    """Normalize harmless whitespace/case differences in workbook headers."""
+    if header is None:
+        return ''
+    return re.sub(r'\s+', ' ', str(header).strip()).casefold()
 
 
 def is_ignored_type(type_value):
@@ -188,63 +198,161 @@ def analyze_workbook(xlsx_path, args):
     Stream through every sheet with read_only=True.
     Returns (headers, dest_counter, bucket_counter, total_rows, kept_rows).
 
-    headers: tuple from the first row of the first sheet
+    headers: canonical union of headers from every sheet
     dest_counter: Counter of destination URLs
     bucket_counter: Counter of bucket keys (for progress reporting)
     """
     wb = load_workbook(xlsx_path, read_only=True)
-    headers = None
-    type_col = None
-    dest_col = None
-    seg_col = None
-    source_col = None
+    headers = []
     dest_counter = Counter()
     bucket_counter = Counter()
     total_rows = 0
     kept_rows = 0
 
-    for sheet_name in wb.sheetnames:
-        ws = wb[sheet_name]
-        for row_num, row in enumerate(ws.iter_rows(values_only=True)):
-            if headers is None and row_num == 0:
-                # First header row we encounter — use it
-                headers = tuple(row)
-                type_col = find_column_index(headers, 'Type')
-                dest_col = find_column_index(headers, 'Destination')
-                seg_col = find_column_index(headers, 'Source Segments')
-                source_col = find_column_index(headers, 'Source')
-                continue
-            elif row_num == 0:
-                # Subsequent sheet header row — skip
-                continue
-
-            # Skip empty rows
-            if all(c is None for c in row):
-                continue
-
-            total_rows += 1
-
-            # Optional type filtering
-            if not args.no_filter and type_col is not None:
-                if is_ignored_type(_safe_cell(row, type_col)):
-                    continue
-
-            kept_rows += 1
-
-            # Destination counting
-            dest_val = _safe_cell(row, dest_col)
-            if dest_val:
-                dest_counter[dest_val] += 1
-
-            # Bucket counting
-            buckets = _resolve_buckets(
-                row, seg_col, source_col, args.split, args.url_depth, args.url_pattern
+    try:
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            header_rows = tuple(
+                ws.iter_rows(min_row=1, max_row=1, values_only=True)
             )
-            for b in buckets:
-                bucket_counter[b] += 1
+            if not header_rows:
+                continue
+            sheet_headers = header_rows[0]
 
-    wb.close()
-    return headers, dest_counter, bucket_counter, total_rows, kept_rows
+            _merge_headers(headers, sheet_headers)
+            type_col, dest_col, seg_col, source_col = _sheet_column_indices(
+                sheet_headers, sheet_name, args
+            )
+            unnamed_columns = _unnamed_column_indices(sheet_headers)
+
+            rows = ws.iter_rows(min_row=2, values_only=True)
+            try:
+                for row in rows:
+                    # Skip empty rows
+                    if all(c is None for c in row):
+                        continue
+                    _validate_unnamed_cells(row, unnamed_columns, sheet_name)
+
+                    total_rows += 1
+
+                    # Optional type filtering
+                    if not args.no_filter and type_col is not None:
+                        if is_ignored_type(_safe_cell(row, type_col)):
+                            continue
+
+                    kept_rows += 1
+
+                    # Destination counting
+                    dest_val = _safe_cell(row, dest_col)
+                    if dest_val:
+                        dest_counter[dest_val] += 1
+
+                    # Bucket counting
+                    buckets = _resolve_buckets(
+                        row,
+                        seg_col,
+                        source_col,
+                        args.split,
+                        args.url_depth,
+                        args.url_pattern,
+                    )
+                    for b in buckets:
+                        bucket_counter[b] += 1
+            finally:
+                rows.close()
+    finally:
+        wb.close()
+
+    canonical_headers = tuple(headers) if headers else None
+    return canonical_headers, dest_counter, bucket_counter, total_rows, kept_rows
+
+
+def _merge_headers(canonical_headers, sheet_headers):
+    """Extend canonical headers with named columns not seen on earlier sheets."""
+    known = {_header_key(header) for header in canonical_headers}
+    for header in sheet_headers:
+        key = _header_key(header)
+        if key and key not in known:
+            canonical_headers.append(header)
+            known.add(key)
+
+
+def _column_remap(source_headers, target_headers):
+    """Map each canonical output column to its index in one source sheet."""
+    source_indices = {
+        _header_key(header): idx
+        for idx, header in enumerate(source_headers)
+        if _header_key(header)
+    }
+    return tuple(source_indices.get(_header_key(header)) for header in target_headers)
+
+
+def _align_row(row, column_remap):
+    """Reorder one source row into the workbook's canonical column order."""
+    return tuple(_safe_cell(row, idx) for idx in column_remap)
+
+
+def _sheet_column_indices(headers, sheet_name, args):
+    """Resolve and validate the columns needed to process one source sheet."""
+    seen_headers = set()
+    duplicate_headers = []
+    for header in headers:
+        key = _header_key(header)
+        if not key:
+            continue
+        if key in seen_headers and str(header) not in duplicate_headers:
+            duplicate_headers.append(str(header))
+        seen_headers.add(key)
+    if duplicate_headers:
+        duplicates = ', '.join(duplicate_headers)
+        raise ValueError(
+            f"Sheet {sheet_name!r} has duplicate column header(s): {duplicates}"
+        )
+
+    indices = {
+        'Type': find_column_index(headers, 'Type'),
+        'Destination': find_column_index(headers, 'Destination'),
+        'Source Segments': find_column_index(headers, 'Source Segments'),
+        'Source': find_column_index(headers, 'Source'),
+    }
+    required = ['Destination']
+    if not args.no_filter:
+        required.append('Type')
+    if args.split in ('region', 'both'):
+        required.append('Source Segments')
+    if args.split in ('url', 'both'):
+        required.append('Source')
+
+    missing = [name for name in required if indices[name] is None]
+    if missing:
+        missing_list = ', '.join(missing)
+        raise ValueError(f"Sheet {sheet_name!r} is missing required column(s): {missing_list}")
+
+    return (
+        indices['Type'],
+        indices['Destination'],
+        indices['Source Segments'],
+        indices['Source'],
+    )
+
+
+def _unnamed_column_indices(headers):
+    """Return zero-based positions of blank header cells."""
+    return tuple(idx for idx, header in enumerate(headers) if not _header_key(header))
+
+
+def _validate_unnamed_cells(row, unnamed_columns, sheet_name):
+    """Reject data that cannot be represented in the canonical named schema."""
+    populated = [
+        idx + 1
+        for idx in unnamed_columns
+        if _safe_cell(row, idx) not in (None, '')
+    ]
+    if populated:
+        columns = ', '.join(str(idx) for idx in populated)
+        raise ValueError(
+            f"Sheet {sheet_name!r} has data in unnamed column(s): {columns}"
+        )
 
 
 def _resolve_buckets(row, seg_col, source_col, split_mode, url_depth, url_pattern):
@@ -271,6 +379,11 @@ class OutputManager:
     """
 
     def __init__(self, output_dir, base_name, headers, dest_counter, no_summary):
+        if len(headers) + 1 > EXCEL_MAX_COLUMNS:
+            raise ValueError(
+                f"{len(headers)} input columns plus Priority exceed Excel's "
+                f"{EXCEL_MAX_COLUMNS}-column limit"
+            )
         self.output_dir = output_dir
         self.base_name = base_name
         self.headers = list(headers) + ['Priority']
@@ -278,22 +391,33 @@ class OutputManager:
         self.no_summary = no_summary
         self._workbooks = {}    # bucket → Workbook
         self._data_sheets = {}  # bucket → worksheet
+        self._data_sheet_parts = Counter()
+        self._data_rows_in_sheet = Counter()
         self._dest_sets = defaultdict(set)  # bucket → set of destinations
         self._row_counts = Counter()
 
     def _init_bucket(self, bucket):
         wb = Workbook(write_only=True)
-        # Summary placeholder — we'll fill it at close() time
-        ws_data = wb.create_sheet("Data")
-        # Write header row
-        ws_data.append(self.headers)
         self._workbooks[bucket] = wb
+        self._start_data_sheet(bucket)
+
+    def _start_data_sheet(self, bucket):
+        """Create the next bounded Data sheet for a bucket."""
+        self._data_sheet_parts[bucket] += 1
+        part = self._data_sheet_parts[bucket]
+        title = 'Data' if part == 1 else f'Data {part}'
+        ws_data = self._workbooks[bucket].create_sheet(title)
+        ws_data.append(self.headers)
         self._data_sheets[bucket] = ws_data
+        self._data_rows_in_sheet[bucket] = 0
 
     def append(self, bucket, row, dest_value, priority):
         if bucket not in self._workbooks:
             self._init_bucket(bucket)
+        if self._data_rows_in_sheet[bucket] >= EXCEL_MAX_ROWS - 1:
+            self._start_data_sheet(bucket)
         self._data_sheets[bucket].append(list(row) + [priority])
+        self._data_rows_in_sheet[bucket] += 1
         self._row_counts[bucket] += 1
         if dest_value:
             self._dest_sets[bucket].add(dest_value)
@@ -312,13 +436,42 @@ class OutputManager:
             files_created += 1
         return files_created
 
-    def _write_summary(self, wb, bucket):
-        """Create a Summary sheet at position 0 with destinations ranked by frequency."""
-        # write_only sheets can only append; we create Summary and move it first
-        ws = wb.create_sheet("Summary", 0)
+    def abort_all(self):
+        """Close streaming writers and remove their temporary XML files."""
+        for wb in self._workbooks.values():
+            for ws in wb.worksheets:
+                rows = getattr(ws, '_rows', None)
+                writer = getattr(ws, '_writer', None)
+                if rows is not None:
+                    try:
+                        rows.close()
+                    except Exception:
+                        pass
+                    ws._rows = None
+                if writer is not None:
+                    try:
+                        writer.close()
+                    except Exception:
+                        pass
+                    try:
+                        writer.cleanup()
+                    except Exception:
+                        pass
+                    writer.xf = None
+                    ws._writer = None
+            try:
+                wb.close()
+            except Exception:
+                pass
 
-        # Header row
-        ws.append(['Priority', 'Destination', 'Occurrences', 'Impact'])
+        self._workbooks.clear()
+        self._data_sheets.clear()
+
+    def _write_summary(self, wb, bucket):
+        """Create bounded Summary sheet(s) with destinations ranked by frequency."""
+        part = 1
+        ws = self._start_summary_sheet(wb, part)
+        rows_in_sheet = 0
 
         dests_in_bucket = self._dest_sets[bucket]
         ranked = sorted(
@@ -327,9 +480,22 @@ class OutputManager:
             reverse=True,
         )
         for dest, freq in ranked:
+            if rows_in_sheet >= EXCEL_MAX_ROWS - 1:
+                part += 1
+                ws = self._start_summary_sheet(wb, part)
+                rows_in_sheet = 0
             priority = get_priority(freq)
             impact = f"Fix 1 URL → removes {freq} error{'s' if freq > 1 else ''}"
             ws.append([priority, dest, freq, impact])
+            rows_in_sheet += 1
+
+    @staticmethod
+    def _start_summary_sheet(wb, part):
+        """Insert the next Summary sheet before all Data sheets."""
+        title = 'Summary' if part == 1 else f'Summary {part}'
+        ws = wb.create_sheet(title, part - 1)
+        ws.append(['Priority', 'Destination', 'Occurrences', 'Impact'])
+        return ws
 
 # ============================================================
 # PASS 2 — SPLITTING (read_only → write_only)
@@ -343,46 +509,61 @@ def split_workbook(xlsx_path, args, headers, dest_counter, output_dir):
     base_name = xlsx_path.stem
     om = OutputManager(output_dir, base_name, headers, dest_counter, args.no_summary)
 
-    type_col = find_column_index(headers, 'Type')
-    dest_col = find_column_index(headers, 'Destination')
-    seg_col = find_column_index(headers, 'Source Segments')
-    source_col = find_column_index(headers, 'Source')
-
-    wb = load_workbook(xlsx_path, read_only=True)
-    first_header_seen = False
-
-    for sheet_name in wb.sheetnames:
-        ws = wb[sheet_name]
-        for row_num, row in enumerate(ws.iter_rows(values_only=True)):
-            if row_num == 0:
-                if not first_header_seen:
-                    first_header_seen = True
-                # Skip header rows in every sheet
-                continue
-
-            if all(c is None for c in row):
-                continue
-
-            # Optional type filtering
-            if not args.no_filter and type_col is not None:
-                if is_ignored_type(_safe_cell(row, type_col)):
+    try:
+        wb = load_workbook(xlsx_path, read_only=True)
+        try:
+            for sheet_name in wb.sheetnames:
+                ws = wb[sheet_name]
+                header_rows = tuple(
+                    ws.iter_rows(min_row=1, max_row=1, values_only=True)
+                )
+                if not header_rows:
                     continue
+                sheet_headers = header_rows[0]
 
-            dest_val = _safe_cell(row, dest_col)
-            freq = dest_counter.get(dest_val, 0) if dest_val else 0
-            priority = get_priority(freq)
+                type_col, dest_col, seg_col, source_col = _sheet_column_indices(
+                    sheet_headers, sheet_name, args
+                )
+                column_remap = _column_remap(sheet_headers, headers)
+                unnamed_columns = _unnamed_column_indices(sheet_headers)
 
-            buckets = _resolve_buckets(
-                row, seg_col, source_col, args.split, args.url_depth, args.url_pattern
-            )
-            for bucket in buckets:
-                om.append(bucket, row, dest_val, priority)
+                rows = ws.iter_rows(min_row=2, values_only=True)
+                try:
+                    for row in rows:
+                        if all(c is None for c in row):
+                            continue
+                        _validate_unnamed_cells(row, unnamed_columns, sheet_name)
 
-    wb.close()
+                        # Optional type filtering
+                        if not args.no_filter and type_col is not None:
+                            if is_ignored_type(_safe_cell(row, type_col)):
+                                continue
 
-    print(f"\n  Output files for {base_name}:")
-    files_created = om.close_all()
-    return files_created
+                        dest_val = _safe_cell(row, dest_col)
+                        freq = dest_counter.get(dest_val, 0) if dest_val else 0
+                        priority = get_priority(freq)
+
+                        buckets = _resolve_buckets(
+                            row,
+                            seg_col,
+                            source_col,
+                            args.split,
+                            args.url_depth,
+                            args.url_pattern,
+                        )
+                        aligned_row = _align_row(row, column_remap)
+                        for bucket in buckets:
+                            om.append(bucket, aligned_row, dest_val, priority)
+                finally:
+                    rows.close()
+        finally:
+            wb.close()
+
+        print(f"\n  Output files for {base_name}:")
+        return om.close_all()
+    except BaseException:
+        om.abort_all()
+        raise
 
 # ============================================================
 # CLI
@@ -477,6 +658,7 @@ def main():
     print(f"  Output     : output/{today}/")
 
     grand_total_files = 0
+    failed_files = 0
 
     for xlsx_path in xlsx_files:
         # --- Pass 1: Analyse ---
@@ -487,6 +669,7 @@ def main():
             )
         except Exception as e:
             print(f"  ERROR: Could not read {xlsx_path.name} — {e}", file=sys.stderr)
+            failed_files += 1
             # Skip the remaining 2 steps for this file
             tracker.current += 2
             continue
@@ -512,8 +695,25 @@ def main():
 
         # --- Pass 2: Split & write ---
         tracker.step(f"Splitting {xlsx_path.name}")
-        files_created = split_workbook(xlsx_path, args, headers, dest_counter, output_dir)
+        try:
+            files_created = split_workbook(
+                xlsx_path, args, headers, dest_counter, output_dir
+            )
+        except Exception as e:
+            print(f"  ERROR: Could not write {xlsx_path.name} — {e}", file=sys.stderr)
+            failed_files += 1
+            continue
         grand_total_files += files_created
+
+    if failed_files:
+        print("\n" + "=" * 60, file=sys.stderr)
+        print(
+            f"Completed with {failed_files} error(s). Created {grand_total_files} "
+            f"output file(s) in output/{today}/",
+            file=sys.stderr,
+        )
+        print("=" * 60, file=sys.stderr)
+        sys.exit(1)
 
     print("\n" + "=" * 60)
     print(f"Done. Created {grand_total_files} output file(s) in output/{today}/")

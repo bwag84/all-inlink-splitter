@@ -7,7 +7,9 @@ class RegionMatchingTests(unittest.TestCase):
     def test_matches_country_segment_names(self):
         cases = {
             'US': ['USA'],
+            'U.S.': ['USA'],
             'United States': ['USA'],
+            'U.S.A.': ['USA'],
             'United States of America': ['USA'],
             'Canada': ['Canada'],
             'United States, Canada': ['USA', 'Canada'],
