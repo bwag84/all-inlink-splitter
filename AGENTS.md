@@ -45,7 +45,7 @@ python3 splitter.py [OPTIONS]
 - **`OutputManager`** — lazy creation of `write_only=True` output workbooks per bucket, with automatic Data/Summary sheet rollover at Excel's row limit
 - **`_resolve_buckets()`** — determines bucket assignment based on split mode
 - **`find_column_index()`** — normalized exact, case-insensitive column lookup
-- **`get_matching_regions()`** — token/alias region detection on Source Segments column
+- **`get_matching_regions()`** — token/alias region detection on Source Segments, with a narrow US Source URL fallback only when no geography matches
 
 ### Split Modes
 

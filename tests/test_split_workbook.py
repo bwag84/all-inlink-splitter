@@ -51,6 +51,78 @@ class SplitWorkbookRegionOutputTests(unittest.TestCase):
             finally:
                 result.close()
 
+    def test_unclassified_us_source_urls_fall_back_to_usa(self):
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            xlsx_path = tmp_path / 'us-url-fallback.xlsx'
+            output_dir = tmp_path / 'output'
+            output_dir.mkdir()
+
+            wb = Workbook()
+            ws = wb.active
+            ws.title = 'All Inlinks'
+            ws.append(['Type', 'Source', 'Destination', 'Source Segments'])
+            ws.append([
+                'Hyperlink',
+                'https://www.fedex.com/en-us/about.html',
+                'https://example.com/broken-1',
+                None,
+            ])
+            ws.append([
+                'Hyperlink',
+                'https://www.fedex.com/es-us/shipping.html',
+                'https://example.com/broken-2',
+                'Shipping',
+            ])
+            ws.append([
+                'Hyperlink',
+                'https://www.fedex.com/content/dam/fedex/us-united-states/report.pdf',
+                'https://example.com/broken-3',
+                None,
+            ])
+            ws.append([
+                'Hyperlink',
+                'https://www.fedex.com/en-us/explicit-region-wins.html',
+                'https://example.com/broken-4',
+                'EU',
+            ])
+            ws.append([
+                'Hyperlink',
+                'https://www.fedex.com/about-us.html',
+                'https://example.com/broken-5',
+                None,
+            ])
+            wb.save(xlsx_path)
+
+            args = Namespace(
+                split='region',
+                url_depth=2,
+                url_pattern=None,
+                no_filter=False,
+                no_summary=False,
+            )
+            headers, dest_counter, bucket_counter, _, _ = analyze_workbook(
+                xlsx_path, args
+            )
+
+            self.assertEqual(
+                dict(bucket_counter),
+                {'USA': 3, 'EU': 1, 'OTHER': 1},
+            )
+
+            files_created = split_workbook(
+                xlsx_path, args, headers, dest_counter, output_dir
+            )
+            self.assertEqual(files_created, 3)
+            result = load_workbook(
+                output_dir / 'us-url-fallback_USA.xlsx', read_only=True
+            )
+            try:
+                rows = list(result['Data'].iter_rows(values_only=True))
+                self.assertEqual(len(rows) - 1, 3)
+            finally:
+                result.close()
+
     def test_analysis_uses_each_sheet_header_order(self):
         with TemporaryDirectory() as tmp:
             xlsx_path = Path(tmp) / 'multi-tab.xlsx'

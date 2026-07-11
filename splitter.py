@@ -39,6 +39,8 @@ REGION_ALIASES = {
     'Canada': ['Canada'],
 }
 SEGMENT_TOKEN_RE = re.compile(r'[A-Za-z0-9]+')
+US_LOCALE_PREFIXES = {'en-us', 'es-us'}
+US_PATH_SEGMENT = 'us-united-states'
 
 # Locale-like path prefixes to skip when extracting URL groups
 LOCALE_RE = re.compile(r'^[a-z]{2}(?:-[a-z]{2})?$', re.IGNORECASE)
@@ -117,17 +119,18 @@ def get_priority(frequency):
     return 'LOW'
 
 
-def get_matching_regions(value):
-    """Return list of regions matching the Source Segments value."""
-    if value is None or str(value).strip() == '':
-        return ['OTHER']
+def get_matching_regions(value, source_url=None):
+    """Return regions from Source Segments, then a narrow Source URL fallback."""
     segment_tokens = [token.upper() for token in SEGMENT_TOKEN_RE.findall(str(value))]
     matches = [
         region
         for region, aliases in REGION_ALIASES.items()
         if any(_matches_segment_alias(segment_tokens, alias) for alias in aliases)
     ]
-    return matches if matches else ['OTHER']
+    if matches:
+        return matches
+    inferred_region = _infer_region_from_source_url(source_url)
+    return [inferred_region] if inferred_region else ['OTHER']
 
 
 def _matches_segment_alias(segment_tokens, alias):
@@ -139,6 +142,26 @@ def _matches_segment_alias(segment_tokens, alias):
         return alias_tokens[0] in segment_tokens
     end = len(segment_tokens) - len(alias_tokens) + 1
     return any(segment_tokens[i:i + len(alias_tokens)] == alias_tokens for i in range(end))
+
+
+def _infer_region_from_source_url(source_url):
+    """Infer USA only from exact US locale/content path segments observed in exports."""
+    try:
+        parsed = urlparse(str(source_url))
+        if parsed.scheme.casefold() not in ('http', 'https') or not parsed.hostname:
+            return None
+        path_segments = [
+            segment.casefold()
+            for segment in parsed.path.split('/')
+            if segment
+        ]
+    except (TypeError, ValueError):
+        return None
+    if path_segments and path_segments[0] in US_LOCALE_PREFIXES:
+        return 'USA'
+    if US_PATH_SEGMENT in path_segments:
+        return 'USA'
+    return None
 
 
 def extract_url_group(url, depth=2, pattern=None):
@@ -357,15 +380,16 @@ def _validate_unnamed_cells(row, unnamed_columns, sheet_name):
 
 def _resolve_buckets(row, seg_col, source_col, split_mode, url_depth, url_pattern):
     """Determine which output bucket(s) a row belongs to."""
+    source_url = _safe_cell(row, source_col)
     if split_mode == 'region':
-        return get_matching_regions(_safe_cell(row, seg_col))
+        return get_matching_regions(_safe_cell(row, seg_col), source_url)
 
     if split_mode == 'url':
-        return [extract_url_group(_safe_cell(row, source_col), url_depth, url_pattern)]
+        return [extract_url_group(source_url, url_depth, url_pattern)]
 
     # both
-    regions = get_matching_regions(_safe_cell(row, seg_col))
-    url_group = extract_url_group(_safe_cell(row, source_col), url_depth, url_pattern)
+    regions = get_matching_regions(_safe_cell(row, seg_col), source_url)
+    url_group = extract_url_group(source_url, url_depth, url_pattern)
     return [f"{r}_{url_group}" for r in regions]
 
 # ============================================================

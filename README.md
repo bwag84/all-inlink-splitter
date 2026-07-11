@@ -59,7 +59,7 @@ output/2025-06-15/
   demo_OTHER.xlsx
 ```
 
-Regions detected: APAC, MEISA, EU, LAC, USA, Canada. `US`, `U.S.`, `USA`, `U.S.A.`, `United States`, and `United States of America` source segments are grouped into the USA file. Rows matching no region go to OTHER. A row matching multiple regions appears in each.
+Regions detected: APAC, MEISA, EU, LAC, USA, Canada. `US`, `U.S.`, `USA`, `U.S.A.`, `United States`, and `United States of America` source segments are grouped into the USA file. When Source Segments contains no recognized geography, exact markers in an absolute HTTP(S) Source URL (`en-us`, `es-us`, or a `us-united-states` path segment) provide a USA fallback; an explicit geographic segment always takes precedence. Rows matching no region go to OTHER. A row matching multiple explicit regions appears in each.
 
 ### URL
 
