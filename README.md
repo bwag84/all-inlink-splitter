@@ -8,6 +8,7 @@ Screaming Frog crawl exports for large sites can exceed 900 MB and span 13+ Exce
 
 - **Streams** through every tab without loading the full file into memory
 - **Splits** by geographical region, URL pattern, or both
+- **Creates optional regional subsets** for configured Source URL paths
 - **Adds a Priority column** based on how often each destination URL appears (HIGH / MEDIUM / LOW)
 - **Creates a Summary sheet** in each output file ranking destinations by impact
 
@@ -37,6 +38,7 @@ python3 splitter.py [OPTIONS]
 | `--split {region,url,both}` | Splitting strategy | `region` |
 | `--url-depth N` | Path segments used for URL grouping | `2` |
 | `--url-pattern REGEX` | Custom regex for URL grouping (overrides `--url-depth`) | — |
+| `--config FILE` | Regional URL subset configuration | `config.json` |
 | `--no-summary` | Skip the Summary sheet in output files | off |
 | `--no-filter` | Keep all row types (don't filter Sitemap Hreflang / XML Sitemap) | off |
 | `--input DIR` | Input directory | `input/` |
@@ -60,6 +62,40 @@ output/2025-06-15/
 ```
 
 Regions detected: APAC, MEISA, EU, LAC, USA, Canada. `US`, `U.S.`, `USA`, `U.S.A.`, `United States`, and `United States of America` source segments are grouped into the USA file. When Source Segments contains no recognized geography, exact markers in an absolute HTTP(S) Source URL (`en-us`, `es-us`, or a `us-united-states` path segment) provide a USA fallback; an explicit geographic segment always takes precedence. Rows matching no region go to OTHER. A row matching multiple explicit regions appears in each.
+
+### Regional URL subsets
+
+Edit `config.json` to create smaller files inside selected regions while retaining the complete regional files:
+
+```json
+{
+  "APAC": [],
+  "EU": ["campaign", "shipping/surcharges"],
+  "LAC": [],
+  "MEISA": [],
+  "USA": ["campaign"],
+  "Canada": [],
+  "OTHER": []
+}
+```
+
+Then run the normal regional split:
+
+```bash
+python3 splitter.py
+```
+
+A Source URL such as `https://www.fedex.com/en-gb/campaign/summer.html` remains in `demo_EU.xlsx` and is also copied to `demo_EU_campaign.xlsx`. A configured multi-folder path such as `shipping/surcharges` produces `demo_EU_shipping_surcharges.xlsx`.
+
+Matching is case-insensitive and checks complete, contiguous Source URL path segments after an optional language or language-country prefix. Domains and query strings are ignored. A row matching multiple configured paths is copied to every matching subset. Empty region arrays—or a missing config file—preserve the standard output exactly. Regional subsets apply only to the default `region` split mode; the existing `url` and `both` modes are unchanged.
+
+Use a different configuration when needed:
+
+```bash
+python3 splitter.py --config configs/campaign-review.json
+```
+
+Configuration errors stop the run before the workbook is processed. Region names must match the keys in the template, and paths must contain path segments only—not domains, query strings, `.` or `..` segments.
 
 ### URL
 
@@ -133,11 +169,14 @@ docker run --rm \
   all-inlink-splitter --split both
 ```
 
+The Docker image includes the repository's `config.json`; `./run.sh` rebuilds the image so edits to that file are picked up on the next run.
+
 ## Project Structure
 
 ```
 all-inlink-splitter/
 ├── splitter.py          # Main script
+├── config.json          # Optional regional URL subset paths
 ├── requirements.txt     # Python dependencies
 ├── Dockerfile           # Docker image definition
 ├── run.sh               # Docker convenience wrapper

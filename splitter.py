@@ -11,6 +11,7 @@ Two-pass streaming architecture for 900+ MB files:
 import re
 import sys
 import argparse
+import json
 from datetime import date
 from pathlib import Path
 from collections import Counter, defaultdict
@@ -50,6 +51,67 @@ LOCALE_RE = re.compile(r'^[a-z]{2}(?:-[a-z]{2})?$', re.IGNORECASE)
 # ============================================================
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
+
+
+def load_regional_subset_config(config_path):
+    """Load configured URL path subsets keyed by canonical region name."""
+    config_path = Path(config_path)
+    if not config_path.exists():
+        return {}
+
+    with config_path.open(encoding='utf-8') as config_file:
+        raw_config = json.load(config_file)
+    if not isinstance(raw_config, dict):
+        raise ValueError('configuration must be a JSON object keyed by region')
+
+    subsets = {}
+    for region, paths in raw_config.items():
+        if region not in {*REGION_ALIASES, 'OTHER'}:
+            raise ValueError(f"unknown region {region!r} in {config_path}")
+        if not isinstance(paths, list):
+            raise ValueError(f"region {region!r} must contain a JSON array of paths")
+        normalized = []
+        seen_paths = set()
+        seen_output_names = set()
+        for path in paths:
+            if not isinstance(path, str):
+                raise ValueError(f"region {region!r} paths must all be strings")
+            clean_path = path.strip().strip('/')
+            if not clean_path:
+                continue
+            segments = clean_path.split('/')
+            if any(
+                not segment
+                or segment in ('.', '..')
+                or not re.fullmatch(r'[A-Za-z0-9._~-]+', segment)
+                for segment in segments
+            ):
+                raise ValueError(
+                    f"unsafe path {path!r} for region {region!r}; "
+                    "use URL path segments only"
+                )
+            path_key = clean_path.casefold()
+            if path_key in seen_paths:
+                raise ValueError(
+                    f"duplicate path {path!r} for region {region!r}"
+                )
+            output_name = _subset_bucket_path(clean_path).casefold()
+            if output_name in seen_output_names:
+                raise ValueError(
+                    f"paths for region {region!r} produce the same output name: "
+                    f"{path!r}"
+                )
+            seen_paths.add(path_key)
+            seen_output_names.add(output_name)
+            normalized.append(clean_path)
+        if normalized:
+            subsets[region] = tuple(normalized)
+    return subsets
+
+
+def _subset_bucket_path(path):
+    """Convert a validated configured path to its output bucket suffix."""
+    return path.replace('/', '_')
 
 def _detect_dirs(cli_input=None, cli_output=None):
     if cli_input:
@@ -278,6 +340,7 @@ def analyze_workbook(xlsx_path, args):
                         args.split,
                         args.url_depth,
                         args.url_pattern,
+                        getattr(args, 'regional_subsets', None),
                     )
                     for b in buckets:
                         bucket_counter[b] += 1
@@ -343,7 +406,9 @@ def _sheet_column_indices(headers, sheet_name, args):
         required.append('Type')
     if args.split in ('region', 'both'):
         required.append('Source Segments')
-    if args.split in ('url', 'both'):
+    if args.split in ('url', 'both') or (
+        args.split == 'region' and getattr(args, 'regional_subsets', None)
+    ):
         required.append('Source')
 
     missing = [name for name in required if indices[name] is None]
@@ -378,11 +443,30 @@ def _validate_unnamed_cells(row, unnamed_columns, sheet_name):
         )
 
 
-def _resolve_buckets(row, seg_col, source_col, split_mode, url_depth, url_pattern):
+def _resolve_buckets(
+    row,
+    seg_col,
+    source_col,
+    split_mode,
+    url_depth,
+    url_pattern,
+    regional_subsets=None,
+):
     """Determine which output bucket(s) a row belongs to."""
     source_url = _safe_cell(row, source_col)
     if split_mode == 'region':
-        return get_matching_regions(_safe_cell(row, seg_col), source_url)
+        regions = get_matching_regions(_safe_cell(row, seg_col), source_url)
+        buckets = list(regions)
+        path_segments = _subset_path_segments(source_url)
+        for region in regions:
+            for path in (regional_subsets or {}).get(region, ()):
+                configured_segments = tuple(
+                    segment.casefold() for segment in path.split('/')
+                )
+                if _contains_path_segments(path_segments, configured_segments):
+                    bucket_path = _subset_bucket_path(path)
+                    buckets.append(f"{region}_{bucket_path}")
+        return buckets
 
     if split_mode == 'url':
         return [extract_url_group(source_url, url_depth, url_pattern)]
@@ -391,6 +475,35 @@ def _resolve_buckets(row, seg_col, source_col, split_mode, url_depth, url_patter
     regions = get_matching_regions(_safe_cell(row, seg_col), source_url)
     url_group = extract_url_group(source_url, url_depth, url_pattern)
     return [f"{r}_{url_group}" for r in regions]
+
+
+def _subset_path_segments(source_url):
+    """Return case-folded URL path segments after an optional locale prefix."""
+    try:
+        parsed = urlparse(str(source_url))
+        if parsed.scheme.casefold() not in ('http', 'https') or not parsed.hostname:
+            return ()
+        segments = tuple(
+            segment.casefold()
+            for segment in parsed.path.split('/')
+            if segment
+        )
+    except (TypeError, ValueError):
+        return ()
+    if segments and LOCALE_RE.fullmatch(segments[0]):
+        return segments[1:]
+    return segments
+
+
+def _contains_path_segments(path_segments, configured_segments):
+    """Return True when configured segments occur contiguously in a URL path."""
+    width = len(configured_segments)
+    if not width or width > len(path_segments):
+        return False
+    return any(
+        path_segments[index:index + width] == configured_segments
+        for index in range(len(path_segments) - width + 1)
+    )
 
 # ============================================================
 # OUTPUT MANAGER — lazy write_only workbooks
@@ -574,6 +687,7 @@ def split_workbook(xlsx_path, args, headers, dest_counter, output_dir):
                             args.split,
                             args.url_depth,
                             args.url_pattern,
+                            getattr(args, 'regional_subsets', None),
                         )
                         aligned_row = _align_row(row, column_remap)
                         for bucket in buckets:
@@ -618,6 +732,13 @@ def build_parser():
         help='Custom regex for URL grouping (overrides --url-depth)',
     )
     parser.add_argument(
+        '--config',
+        type=str,
+        default=str(SCRIPT_DIR / 'config.json'),
+        metavar='FILE',
+        help='Regional URL subset configuration (default: config.json)',
+    )
+    parser.add_argument(
         '--no-summary',
         action='store_true',
         help='Skip creating the Summary sheet in output files',
@@ -651,6 +772,16 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
 
+    config_path = Path(args.config)
+    try:
+        args.regional_subsets = (
+            load_regional_subset_config(config_path)
+            if config_path.exists()
+            else {}
+        )
+    except (OSError, TypeError, ValueError) as error:
+        parser.error(f"invalid regional subset config {config_path}: {error}")
+
     input_dir, output_base = _detect_dirs(args.input, args.output)
     input_dir.mkdir(parents=True, exist_ok=True)
 
@@ -672,6 +803,9 @@ def main():
     print("All Inlinks Splitter")
     print("=" * 60)
     print(f"  Split mode : {args.split}")
+    if args.regional_subsets:
+        subset_count = sum(len(paths) for paths in args.regional_subsets.values())
+        print(f"  Subsets    : {subset_count} from {config_path}")
     if args.split in ('url', 'both'):
         if args.url_pattern:
             print(f"  URL pattern: {args.url_pattern}")
