@@ -21,6 +21,7 @@ python3 splitter.py [OPTIONS]
 - `--split {region,url,both}` — splitting strategy (default: region)
 - `--url-depth N` — path segments for URL grouping (default: 2)
 - `--url-pattern REGEX` — custom regex override for URL grouping
+- `--config FILE` — regional URL subset configuration (default: `config.json`)
 - `--no-summary` — skip Summary sheet
 - `--no-filter` — keep all row types (don't filter Sitemap Hreflang / XML Sitemap)
 - `--input DIR` / `--output DIR` — override default directories
@@ -44,12 +45,14 @@ python3 splitter.py [OPTIONS]
 - **`extract_url_group(url, depth, pattern)`** — strips locale prefix, takes N path segments as grouping key
 - **`OutputManager`** — lazy creation of `write_only=True` output workbooks per bucket, with automatic Data/Summary sheet rollover at Excel's row limit
 - **`_resolve_buckets()`** — determines bucket assignment based on split mode
+- **`load_regional_subset_config()`** — validates region-specific Source URL path subsets
 - **`find_column_index()`** — normalized exact, case-insensitive column lookup
 - **`get_matching_regions()`** — token/alias region detection on Source Segments, with a narrow US Source URL fallback only when no geography matches
 
 ### Split Modes
 
 - **region**: Groups by Source Segments → APAC, EU, LAC, MEISA, USA, OTHER
+- **regional subsets**: In region mode, keeps the parent region bucket and adds configured path buckets such as `EU_campaign`
 - **url**: Groups by URL path pattern from Source column
 - **both**: Cross-product of region × URL group
 
@@ -73,6 +76,8 @@ Data and Summary entries beyond the 1,048,575-per-sheet capacity continue in num
 Iterates `wb.sheetnames` to process every sheet. Each sheet's first row is resolved independently; headers are merged into a canonical union and rows are remapped before writing. Missing, duplicate, or data-bearing unnamed headers raise a descriptive error instead of silently corrupting output.
 
 ## Configuration
+
+`config.json` contains arrays of URL paths for each canonical region. Matches are case-insensitive, use complete contiguous path segments after an optional locale prefix, and create additional regional output files without removing rows from the parent region file. Empty arrays preserve the normal output.
 
 Top of `splitter.py`:
 - `IGNORED_TYPES`: Types to exclude (default: Sitemap Hreflang, XML Sitemap)
