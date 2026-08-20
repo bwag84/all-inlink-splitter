@@ -34,18 +34,18 @@ python3 splitter.py [OPTIONS]
 
 ### Two-Pass Streaming
 
-**Pass 1 (`analyze_workbook`):** Streams all sheets with `read_only=True`. Builds `Counter` objects for destination frequencies and bucket membership. No row storage — only counts.
+**Pass 1 (`analyze_workbook`):** Streams all sheets with `read_only=True`. Builds canonical headers plus `Counter` objects for destination frequencies and bucket membership. Each sheet resolves its own column positions. No row storage — only counts and headers.
 
-**Pass 2 (`split_workbook`):** Streams all sheets again with `read_only=True`. Routes each row to an `OutputManager` bucket which writes using `write_only=True` workbooks. Summary sheets are created at close time using Pass 1 data.
+**Pass 2 (`split_workbook`):** Streams all sheets again with `read_only=True`. Aligns each sheet's rows to the canonical header order, then routes them to an `OutputManager` bucket which writes using `write_only=True` workbooks. Summary sheets are created at close time using Pass 1 data.
 
 ### Key Components
 
 - **`ProgressTracker`** — prints `[Step X of Y] description` format
 - **`extract_url_group(url, depth, pattern)`** — strips locale prefix, takes N path segments as grouping key
-- **`OutputManager`** — lazy creation of `write_only=True` output workbooks per bucket
+- **`OutputManager`** — lazy creation of `write_only=True` output workbooks per bucket, with automatic Data/Summary sheet rollover at Excel's row limit
 - **`_resolve_buckets()`** — determines bucket assignment based on split mode
-- **`find_column_index()`** — case-insensitive column lookup
-- **`get_matching_regions()`** — regex region detection on Source Segments column
+- **`find_column_index()`** — normalized exact, case-insensitive column lookup
+- **`get_matching_regions()`** — token/alias region detection on Source Segments, with a narrow US Source URL fallback only when no geography matches
 
 ### Split Modes
 
@@ -62,20 +62,22 @@ Based on destination frequency across all data:
 
 ### Output File Structure
 
-Each output file has two sheets:
+Each output file normally has two sheets:
 1. **Summary** — destinations ranked by frequency with Priority and Impact columns
-2. **Data** — all original columns plus appended Priority column
+2. **Data** — canonical input columns plus appended Priority column
+
+Data and Summary entries beyond the 1,048,575-per-sheet capacity continue in numbered sheets with repeated headers.
 
 ### Multi-Tab Handling
 
-Iterates `wb.sheetnames` to process every sheet. Headers are taken from the first sheet's first row; subsequent sheets' row 0 is skipped.
+Iterates `wb.sheetnames` to process every sheet. Each sheet's first row is resolved independently; headers are merged into a canonical union and rows are remapped before writing. Missing, duplicate, or data-bearing unnamed headers raise a descriptive error instead of silently corrupting output.
 
 ## Configuration
 
 Top of `splitter.py`:
 - `IGNORED_TYPES`: Types to exclude (default: Sitemap Hreflang, XML Sitemap)
 - `HIGH_THRESHOLD` / `MEDIUM_THRESHOLD`: Priority thresholds (default: 100 / 10)
-- `REGIONS`: Region keywords (default: APAC, MEISA, EU, LAC, USA)
+- `REGION_ALIASES`: Canonical region names and accepted Source Segments aliases
 
 ## Dependencies
 
