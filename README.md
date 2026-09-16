@@ -69,13 +69,13 @@ Edit `config.json` to create smaller files inside selected regions while retaini
 
 ```json
 {
-  "APAC": [],
-  "EU": ["campaign", "shipping/surcharges"],
-  "LAC": [],
-  "MEISA": [],
-  "USA": ["campaign"],
-  "Canada": [],
-  "OTHER": []
+  "From / source": {
+    "EU": ["campaign", "shipping/surcharges"],
+    "USA": ["campaign"]
+  },
+  "To / destination": {
+    "EU": ["folder"]
+  }
 }
 ```
 
@@ -87,7 +87,11 @@ python3 splitter.py
 
 A Source URL such as `https://www.fedex.com/en-gb/campaign/summer.html` remains in `demo_EU.xlsx` and is also copied to `demo_EU_campaign.xlsx`. A configured multi-folder path such as `shipping/surcharges` produces `demo_EU_shipping_surcharges.xlsx`.
 
-Matching is case-insensitive and checks complete, contiguous Source URL path segments after an optional language or language-country prefix. Domains and query strings are ignored. A row matching multiple configured paths is copied to every matching subset. Empty region arrays—or a missing config file—preserve the standard output exactly. Regional subsets apply only to the default `region` split mode; the existing `url` and `both` modes are unchanged.
+Use **From / source** for paths on the page containing the link and **To / destination** for paths the link points to. For example, a link from `/nl-nl/customer-support` to `/nl-nl/folder/tracking.html` matches destination `folder` and is copied to `demo_EU_to_folder.xlsx`. Source and destination rules match independently; they are not an AND filter. Regions still come from Source Segments, so add a destination path to every source region whose inlinks you want to collect.
+
+Matching is case-insensitive and checks complete, contiguous URL path segments after an optional language or language-country prefix. Domains and query strings are ignored. A row matching multiple configured paths is copied to every matching subset. Empty region arrays—or a missing config file—preserve the standard output exactly. Regional subsets apply only to the default `region` split mode; the existing `url` and `both` modes are unchanged.
+
+The section names serve as headers because JSON does not support comments. Either section and any unused regions may be omitted. Legacy flat region-to-path configs still work as source-only rules. Output filename collisions between source and destination rules are rejected.
 
 Use a different configuration when needed:
 

@@ -11,6 +11,26 @@ from splitter import _resolve_buckets, analyze_workbook, split_workbook
 
 
 class RegionalSubsetConfigTests(unittest.TestCase):
+    def test_directional_config_validation(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'config.json'
+            path.write_text(json.dumps({'To / destination': {'EU': ['/folder/']}}))
+            self.assertEqual(splitter.load_regional_subset_config(path), {
+                'From / source': {}, 'To / destination': {'EU': ('folder',)},
+            })
+            for config in (
+                {'To / destination': []},
+                {'To / destination': {'EU': ['../folder']}},
+                {'To / destination': {'EU': ['folder', 'Folder']}},
+                {'To / destination': {}, 'EU': []},
+                {'From / source': {'EU': ['to_folder']},
+                 'To / destination': {'EU': ['folder']}},
+            ):
+                with self.subTest(config=config):
+                    path.write_text(json.dumps(config))
+                    with self.assertRaises(ValueError):
+                        splitter.load_regional_subset_config(path)
+
     def test_missing_config_preserves_existing_behavior(self):
         with TemporaryDirectory() as tmp:
             config_path = Path(tmp) / 'missing.json'
@@ -111,6 +131,53 @@ class RegionalSubsetConfigTests(unittest.TestCase):
 
 
 class RegionalSubsetRoutingTests(unittest.TestCase):
+    def test_destination_subsets_across_reordered_sheets(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / 'crawl.xlsx'
+            workbook = Workbook()
+            headers = ['Type', 'Source', 'Destination', 'Source Segments']
+            destination = 'https://www.fedex.com/nl-nl/FOLDER/tracking.html'
+            rows = [
+                ['Hyperlink', 'https://www.fedex.com/nl-nl/customer-support', destination, 'EU'],
+                ['Hyperlink', 'https://www.fedex.com/nl-nl/folder', 'https://example.com/elsewhere', 'EU'],
+                ['Hyperlink', 'https://example.com/page', 'https://example.com/folderish/page?x=/folder/', 'EU'],
+                ['XML Sitemap', 'https://example.com/page', destination, 'EU'],
+            ]
+            sheet = workbook.active
+            sheet.append(headers)
+            for row in rows:
+                sheet.append(row)
+            sheet = workbook.create_sheet('Reordered')
+            sheet.append(list(reversed(headers)))
+            sheet.append(list(reversed(rows[0])))
+            workbook.save(path)
+            config_path = root / 'config.json'
+            config_path.write_text(json.dumps({
+                'From / source': {'EU': ['folder']},
+                'To / destination': {'EU': ['folder', 'folder/tracking.html']},
+            }))
+            args = Namespace(split='region', url_depth=2, url_pattern=None,
+                             no_filter=False, no_summary=False,
+                             regional_subsets=splitter.load_regional_subset_config(config_path))
+            canonical, counts, buckets, _, _ = analyze_workbook(path, args)
+            self.assertEqual(dict(buckets), {
+                'EU': 4, 'EU_folder': 1, 'EU_to_folder': 2,
+                'EU_to_folder_tracking.html': 2,
+            })
+            output = root / 'output'
+            output.mkdir()
+            self.assertEqual(split_workbook(path, args, canonical, counts, output), 4)
+            result = load_workbook(output / 'crawl_EU_to_folder.xlsx', read_only=True)
+            try:
+                data = list(result['Data'].values)
+                self.assertEqual(len(data), 3)
+                self.assertTrue(all(row[2] == destination for row in data[1:]))
+                summary = list(result['Summary'].values)
+                self.assertEqual(summary[1][1:3], (destination, 2))
+            finally:
+                result.close()
+
     def test_active_subset_config_requires_source_url_column(self):
         with TemporaryDirectory() as tmp:
             xlsx_path = Path(tmp) / 'crawl.xlsx'

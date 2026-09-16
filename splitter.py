@@ -64,6 +64,31 @@ def load_regional_subset_config(config_path):
     if not isinstance(raw_config, dict):
         raise ValueError('configuration must be a JSON object keyed by region')
 
+    sections = {'From / source', 'To / destination'}
+    if sections.intersection(raw_config):
+        unknown = raw_config.keys() - sections
+        if unknown:
+            raise ValueError(f"unknown configuration section(s): {sorted(unknown)}")
+        result = {
+            key: _validate_regional_paths(raw_config.get(key, {}), config_path)
+            for key in ('From / source', 'To / destination')
+        }
+        for region, paths in result['To / destination'].items():
+            source_names = {
+                _subset_bucket_path(path).casefold()
+                for path in result['From / source'].get(region, ())
+            }
+            if any('to_' + _subset_bucket_path(path).casefold() in source_names
+                   for path in paths):
+                raise ValueError(f"source and destination paths for {region!r} produce the same output name")
+        return result
+    return _validate_regional_paths(raw_config, config_path)
+
+
+def _validate_regional_paths(raw_config, config_path):
+    """Validate one region-to-path mapping, shared by both directions."""
+    if not isinstance(raw_config, dict):
+        raise ValueError('configuration section must be a JSON object keyed by region')
     subsets = {}
     for region, paths in raw_config.items():
         if region not in {*REGION_ALIASES, 'OTHER'}:
@@ -107,6 +132,14 @@ def load_regional_subset_config(config_path):
         if normalized:
             subsets[region] = tuple(normalized)
     return subsets
+
+
+def _subset_directions(config):
+    """Accept both legacy source-only mappings and labeled configurations."""
+    config = config or {}
+    if 'From / source' in config or 'To / destination' in config:
+        return config.get('From / source', {}), config.get('To / destination', {})
+    return config, {}
 
 
 def _subset_bucket_path(path):
@@ -341,6 +374,7 @@ def analyze_workbook(xlsx_path, args):
                         args.url_depth,
                         args.url_pattern,
                         getattr(args, 'regional_subsets', None),
+                        dest_col=dest_col,
                     )
                     for b in buckets:
                         bucket_counter[b] += 1
@@ -407,7 +441,9 @@ def _sheet_column_indices(headers, sheet_name, args):
     if args.split in ('region', 'both'):
         required.append('Source Segments')
     if args.split in ('url', 'both') or (
-        args.split == 'region' and getattr(args, 'regional_subsets', None)
+        args.split == 'region' and _subset_directions(
+            getattr(args, 'regional_subsets', None)
+        )[0]
     ):
         required.append('Source')
 
@@ -451,21 +487,27 @@ def _resolve_buckets(
     url_depth,
     url_pattern,
     regional_subsets=None,
+    dest_col=None,
 ):
     """Determine which output bucket(s) a row belongs to."""
     source_url = _safe_cell(row, source_col)
     if split_mode == 'region':
         regions = get_matching_regions(_safe_cell(row, seg_col), source_url)
         buckets = list(regions)
-        path_segments = _subset_path_segments(source_url)
-        for region in regions:
-            for path in (regional_subsets or {}).get(region, ()):
-                configured_segments = tuple(
-                    segment.casefold() for segment in path.split('/')
-                )
-                if _contains_path_segments(path_segments, configured_segments):
-                    bucket_path = _subset_bucket_path(path)
-                    buckets.append(f"{region}_{bucket_path}")
+        source_subsets, destination_subsets = _subset_directions(regional_subsets)
+        for subsets, url, prefix in (
+            (source_subsets, source_url, ''),
+            (destination_subsets, _safe_cell(row, dest_col), 'to_'),
+        ):
+            path_segments = _subset_path_segments(url)
+            for region in regions:
+                for path in subsets.get(region, ()):
+                    configured_segments = tuple(
+                        segment.casefold() for segment in path.split('/')
+                    )
+                    if _contains_path_segments(path_segments, configured_segments):
+                        bucket_path = _subset_bucket_path(path)
+                        buckets.append(f"{region}_{prefix}{bucket_path}")
         return buckets
 
     if split_mode == 'url':
@@ -688,6 +730,7 @@ def split_workbook(xlsx_path, args, headers, dest_counter, output_dir):
                             args.url_depth,
                             args.url_pattern,
                             getattr(args, 'regional_subsets', None),
+                            dest_col=dest_col,
                         )
                         aligned_row = _align_row(row, column_remap)
                         for bucket in buckets:
@@ -804,7 +847,11 @@ def main():
     print("=" * 60)
     print(f"  Split mode : {args.split}")
     if args.regional_subsets:
-        subset_count = sum(len(paths) for paths in args.regional_subsets.values())
+        subset_count = sum(
+            len(paths)
+            for direction in _subset_directions(args.regional_subsets)
+            for paths in direction.values()
+        )
         print(f"  Subsets    : {subset_count} from {config_path}")
     if args.split in ('url', 'both'):
         if args.url_pattern:

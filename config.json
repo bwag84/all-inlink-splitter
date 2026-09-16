@@ -1,9 +1,20 @@
 {
-  "APAC": [],
-  "EU": ["campaign", "shipping", "how-to", "support", "sponsorship"],
-  "LAC": [],
-  "MEISA": [],
-  "USA": [],
-  "Canada": [],
-  "OTHER": []
+  "From / source": {
+    "APAC": [],
+    "EU": ["campaign", "shipping", "how-to", "support", "sponsorship"],
+    "LAC": [],
+    "MEISA": [],
+    "USA": [],
+    "Canada": [],
+    "OTHER": []
+  },
+  "To / destination": {
+    "APAC": [],
+    "EU": ["shipping-channel"],
+    "LAC": [],
+    "MEISA": [],
+    "USA": [],
+    "Canada": [],
+    "OTHER": []
+  }
 }
